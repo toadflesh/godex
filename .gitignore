@@ -1,0 +1,5 @@
+bin/
+code_graveyard/
+.env
+*.json
+*.csv
