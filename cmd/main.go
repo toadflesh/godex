@@ -18,7 +18,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/shopspring/decimal"
-	"github.com/toadflesh/btcparser/internal/database"
+	"github.com/toadflesh/godex/internal/database"
 )
 
 type Config struct {

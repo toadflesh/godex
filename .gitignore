@@ -1,5 +1,6 @@
 bin/
 code_graveyard/
+vendor/
 .env
 *.json
 *.csv
