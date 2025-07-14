@@ -10,7 +10,7 @@ CREATE TABLE blocks (
     median_time TIMESTAMPTZ,
     nonce INTEGER,
     bits VARCHAR(64),
-    difficulty TEXT,
+    difficulty DECIMAL(20,8),
     chainwork VARCHAR(64),
     ntx INTEGER,
     previous_block_hash VARCHAR(64),

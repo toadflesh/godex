@@ -11,9 +11,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/shopspring/decimal"
 	"github.com/toadflesh/btcparser/internal/database"
 )
 
@@ -71,59 +75,71 @@ type BlockchainInfo struct {
 }
 
 type Block struct {
-	BlockHash         string        `json:"hash"`
-	Confirmations     int64         `json:"confirmations"`
-	Height            int64         `json:"height"`
-	Version           int64         `json:"version"`
-	VersionHex        string        `json:"versionHex"`
-	MerkleRoot        string        `json:"merkleroot"`
-	Time              int64         `json:"time"`
-	MedianTime        int64         `json:"mediantime"`
-	Nonce             int64         `json:"nonce"`
-	Bits              string        `json:"bits"`
-	Difficulty        float64       `json:"difficulty"`
-	Chainwork         string        `json:"chainwork"`
-	NTX               int32         `json:"nTx"`
-	PreviousBlockHash string        `json:"previousblockhash"`
-	StrippedSize      int64         `json:"strippedsize"`
-	Size              int64         `json:"size"`
-	Weight            int64         `json:"weight"`
-	Transactions      []Transaction `json:"tx"`
-	NextBlockHash     string        `json:"nextblockhash"`
+	BlockHash         string          `json:"hash"`
+	Confirmations     uint            `json:"confirmations"`
+	Height            uint            `json:"height"`
+	Version           uint            `json:"version"`
+	VersionHex        string          `json:"versionHex"`
+	MerkleRoot        string          `json:"merkleroot"`
+	Time              time.Time       `json:"time"`
+	MedianTime        time.Time       `json:"mediantime"`
+	Nonce             uint            `json:"nonce"`
+	Bits              string          `json:"bits"`
+	Difficulty        decimal.Decimal `json:"difficulty"`
+	Chainwork         string          `json:"chainwork"`
+	NTX               uint            `json:"nTx"`
+	PreviousBlockHash *string         `json:"previousblockhash"`
+	NextBlockHash     *string         `json:"nextblockhash"`
+	StrippedSize      uint            `json:"strippedsize"`
+	Size              uint            `json:"size"`
+	Weight            uint            `json:"weight"`
+	Transactions      []Transaction   `json:"tx"`
 }
 
 type Transaction struct {
 	TxID     string `json:"txid"`
 	Hash     string `json:"hash"`
-	Version  int    `json:"version"`
-	Size     int64  `json:"size"`
-	VSize    int64  `json:"vsize"`
-	Weight   int64  `json:"weight"`
-	Locktime int64  `json:"locktime"`
+	Version  uint   `json:"version"`
+	Size     uint   `json:"size"`
+	VSize    uint   `json:"vsize"`
+	Weight   uint   `json:"weight"`
+	Locktime uint   `json:"locktime"`
 	Vin      []struct {
-		Coinbase  string `json:"coinbase"`
-		TxID      string `json:"txid"`
-		Vout      int    `json:"vout"`
+		Coinbase  *string `json:"coinbase"`
+		TxID      *string `json:"txid"`
+		Vout      uint    `json:"vout"`
 		ScriptSig struct {
-			Asm string `json:"asm"`
-			Hex string `json:"hex"`
+			Asm *string `json:"asm"`
+			Hex *string `json:"hex"`
 		} `json:"scriptSig"`
 		TxInWitness []string `json:"txinwitness"`
-		Sequence    int64    `json:"sequence"`
+		Prevout     struct {
+			Generated    bool             `json:"generated"`
+			PrevHeight   *uint            `json:"height"`
+			Value        *decimal.Decimal `json:"value"`
+			ScriptPubKey struct {
+				Asm     *string `json:"asm"`
+				Desc    *string `json:"desc"`
+				Hex     *string `json:"hex"`
+				Address *string `json:"address"`
+				Type    *string `json:"type"`
+			} `json:"scriptPubKey"`
+		} `json:"prevout"`
+		Sequence uint `json:"sequence"`
 	} `json:"vin"`
 	Vout []struct {
-		Value        float64 `json:"value"`
-		N            int     `json:"n"`
+		Value        decimal.Decimal `json:"value"`
+		N            uint            `json:"n"`
 		ScriptPubKey struct {
-			Asm     string `json:"asm"`
-			Desc    string `json:"desc"`
-			Hex     string `json:"hex"`
-			Address string `json:"address"`
-			Type    string `json:"type"`
+			Asm     string  `json:"asm"`
+			Desc    string  `json:"desc"`
+			Hex     string  `json:"hex"`
+			Address *string `json:"address"`
+			Type    string  `json:"type"`
 		} `json:"scriptPubKey"`
 	} `json:"vout"`
-	Fee float64 `json:"fee"`
-	Hex string  `json:"hex"`
+	Fee decimal.Decimal `json:"fee"`
+	Hex string          `json:"hex"`
 }
 
 func (rpcRequest *RPCRequest) SendRPCRequest(config *Config, payload []byte) (RPCResponse, error) {
@@ -229,8 +245,202 @@ func (rpcRequest *RPCRequest) GetBlockHash(config *Config, ctx *context.Context,
 	return blockhash, nil
 }
 
-func (block *Block) CopyBlock(config *Config, ctx *context.Context, db *database.Queries) error {
+func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
+	//********************************************************************//
+	// Start a transaction                                                //
+	//********************************************************************//
+	dbtx, err := conn.Begin(*ctx)
+	if err != nil {
+		dbtxErr := fmt.Sprintf("ERROR: error beginning pgx transaction: %v", err)
+		return errors.New(dbtxErr)
+	}
+
+	// If there is an error, rollback changes
+	defer dbtx.Rollback(*ctx)
+
+	//********************************************************************//
+	// COPY blocks                                                        //
+	//********************************************************************//
+
+	// Generate csv
+	blocksCSV := fmt.Sprintf(
+		"%s,%d,%d,%d,%s,%s,%s,%s,%d,%s,%s,%s,%d,%s,%s,%d,%d,%d\n",
+		block.BlockHash,
+		block.Confirmations,
+		block.Height,
+		block.Version,
+		block.VersionHex,
+		block.MerkleRoot,
+		block.Time.Format("2006-01-02 15:04:05-07:00"),
+		block.MedianTime.Format("2006-01-02 15:04:05-07:00"),
+		block.Nonce,
+		block.Bits,
+		block.Difficulty,
+		block.Chainwork,
+		block.NTX,
+		NullString(block.PreviousBlockHash),
+		NullString(block.NextBlockHash),
+		block.StrippedSize,
+		block.Size,
+		block.Weight,
+	)
+	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(blocksCSV), `
+		COPY blocks (
+		blockhash, confirmations, height, version, version_hex, merkle_root, 
+		time, median_time, nonce, bits, difficulty, chainwork, ntx, 
+		previous_block_hash, next_block_hash, stripped_size, size, weight
+		) FROM STDIN WITH (FORMAT csv, NULL '')
+	`)
+	if err != nil {
+		copyBlocksErr := fmt.Sprintf("ERROR: error with COPY blocks: %v", err)
+		return errors.New(copyBlocksErr)
+	}
+
+	//********************************************************************//
+	// COPY transactions                                                  //
+	//********************************************************************//
+
+	transactionsCSV := strings.Builder{}
+	for _, t := range block.Transactions {
+		segwit := false
+
+		// Determine if segwit
+		if t.TxID != t.Hash {
+			segwit = true
+		}
+
+		// Determine if RBF is enabled
+		// Check each vin sequence
+		// - if sequence < 0xfffffffe
+		// then RBF is enabled
+		rbf := false
+		for _, in := range t.Vin {
+			if in.Sequence < 0xfffffffe {
+				rbf = true
+				break
+			}
+		}
+		fmt.Fprintf(&transactionsCSV, "%s,%s,%t,%t,%d,%d,%d,%d,%d,%s,%s,%s,%d,%s\n",
+			t.TxID,
+			t.Hash,
+			segwit,
+			rbf,
+			t.Version,
+			t.Size,
+			t.VSize,
+			t.Weight,
+			t.Locktime,
+			t.Fee.String(),
+			t.Hex,
+			block.BlockHash,
+			block.Height,
+			block.Time.Format("2006-01-02 15:04:05-07:00"),
+		)
+
+		//********************************************************************//
+		// COPY vins                                                          //
+		//********************************************************************//
+		vinsCSV := strings.Builder{}
+		for _, v := range t.Vin {
+			witness := "{" + strings.Join(v.TxInWitness, ",") + "}"
+			fmt.Fprintf(&vinsCSV, "%s,%s,%s,%d,%s,%s,%q,%s,%s,%s,%s,%s,%s,%s,%d\n",
+				t.TxID,
+				NullString(v.TxID),
+				NullString(v.Coinbase),
+				v.Vout,
+				NullString(v.ScriptSig.Asm),
+				NullString(v.ScriptSig.Hex),
+				witness,
+				NullUint(v.Prevout.PrevHeight),
+				NullDecimal(v.Prevout.Value),
+				NullString(v.Prevout.ScriptPubKey.Asm),
+				NullString(v.Prevout.ScriptPubKey.Desc),
+				NullString(v.Prevout.ScriptPubKey.Hex),
+				NullString(v.Prevout.ScriptPubKey.Address),
+				NullString(v.Prevout.ScriptPubKey.Type),
+				v.Sequence,
+			)
+		}
+		_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(vinsCSV.String()), `
+			COPY vins (
+				txid, prev_txid, coinbase, vout, scriptsig_asm, scriptsig_hex, txinwitness,
+				prev_blockheight, value, script_pubkey_asm, script_pubkey_desc,
+				script_pubkey_hex, script_pubkey_address, script_pubkey_type, sequence
+			) FROM STDIN WITH (FORMAT csv, NULL '', QUOTE '"', ESCAPE '\')
+		`)
+		if err != nil {
+			vinsCSVError := fmt.Sprintf("ERROR: error COPY vins to db: %v", err)
+			return errors.New(vinsCSVError)
+		}
+
+		//********************************************************************//
+		// COPY vins                                                          //
+		//********************************************************************//
+		voutsCSV := strings.Builder{}
+		for _, v := range t.Vout {
+			fmt.Fprintf(&voutsCSV, "%s,%s,%d,%s,%s,%s,%s,%s\n",
+				t.TxID,
+				v.Value.String(),
+				v.N,
+				v.ScriptPubKey.Asm,
+				v.ScriptPubKey.Desc,
+				v.ScriptPubKey.Hex,
+				NullString(v.ScriptPubKey.Address),
+				v.ScriptPubKey.Type,
+			)
+		}
+		_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(voutsCSV.String()), `
+			COPY vouts (
+				txid, value, n, script_pubkey_asm, script_pubkey_desc,
+				script_pubkey_hex, script_pubkey_address, script_pubkey_type
+			) FROM STDIN WITH (FORMAT csv, NULL '', QUOTE '"', ESCAPE '\')
+		`)
+		if err != nil {
+			voutsCSVError := fmt.Sprintf("ERROR: error COPY vouts to db: %v", err)
+			return errors.New(voutsCSVError)
+		}
+	}
+	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(transactionsCSV.String()), `
+	COPY transactions (
+		txid, hash, segwit, replace_by_fee, version, size, vsize, weight,
+		locktime, fee, hex, blockhash, blockheight, time
+		) FROM STDIN WITH (FORMAT csv, NULL '')
+	`)
+	if err != nil {
+		transactionCSVError := fmt.Sprintf("ERROR: error copying transactions: %v", err)
+		return errors.New(transactionCSVError)
+	}
+
+	// Commit transaction
+	// if no errors occurred we are ready to commit to db
+	err = dbtx.Commit(*ctx)
+	if err != nil {
+		commitError := fmt.Sprintf("ERROR: error committing changes to db: %v", err)
+		return errors.New(commitError)
+	}
+
 	return nil
+}
+
+func NullString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func NullUint(n *uint) string {
+	if n == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *n)
+}
+
+func NullDecimal(d *decimal.Decimal) string {
+	if d == nil {
+		return ""
+	}
+	return d.String()
 }
 
 type RPCResponse struct {
@@ -265,9 +475,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("error connecting to postgresql database: %v", err)
 	}
-
-	ctx := context.Background()
 	dbQueries := database.New(db)
+
+	// create context
+	ctx := context.Background()
+
+	//********************************************************************//
+	// pgx database connection for COPY                                   //
+	//********************************************************************//
+	conn, err := pgx.Connect(ctx, config.DBURL)
+	if err != nil {
+		log.Fatalf("error connecting to postgresql database using pgx: %v", err)
+	}
+	defer conn.Close(ctx)
 
 	//********************************************************************//
 	// Once the connection has been made, query the highest block         //
@@ -343,7 +563,7 @@ func main() {
 			}
 
 			// Copy the whole block to the database using COPY statements
-			err = block.CopyBlock(&config, &ctx, dbQueries)
+			err = block.CopyBlock(&ctx, conn)
 			if err != nil {
 				log.Fatalf("%v", err)
 			}
