@@ -8,7 +8,7 @@ CREATE TABLE blocks (
     merkle_root VARCHAR(64),
     time TIMESTAMPTZ,
     median_time TIMESTAMPTZ,
-    nonce INTEGER,
+    nonce BIGINT,
     bits VARCHAR(64),
     difficulty DECIMAL(20,8),
     chainwork VARCHAR(64),

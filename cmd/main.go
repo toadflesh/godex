@@ -76,38 +76,38 @@ type BlockchainInfo struct {
 
 type Block struct {
 	BlockHash         string          `json:"hash"`
-	Confirmations     uint            `json:"confirmations"`
-	Height            uint            `json:"height"`
-	Version           uint            `json:"version"`
+	Confirmations     int64           `json:"confirmations"`
+	Height            int64           `json:"height"`
+	Version           int64           `json:"version"`
 	VersionHex        string          `json:"versionHex"`
 	MerkleRoot        string          `json:"merkleroot"`
-	Time              time.Time       `json:"time"`
-	MedianTime        time.Time       `json:"mediantime"`
-	Nonce             uint            `json:"nonce"`
+	Time              int64           `json:"time"`
+	MedianTime        int64           `json:"mediantime"`
+	Nonce             int64           `json:"nonce"`
 	Bits              string          `json:"bits"`
 	Difficulty        decimal.Decimal `json:"difficulty"`
 	Chainwork         string          `json:"chainwork"`
-	NTX               uint            `json:"nTx"`
+	NTX               int64           `json:"nTx"`
 	PreviousBlockHash *string         `json:"previousblockhash"`
 	NextBlockHash     *string         `json:"nextblockhash"`
-	StrippedSize      uint            `json:"strippedsize"`
-	Size              uint            `json:"size"`
-	Weight            uint            `json:"weight"`
+	StrippedSize      int64           `json:"strippedsize"`
+	Size              int64           `json:"size"`
+	Weight            int64           `json:"weight"`
 	Transactions      []Transaction   `json:"tx"`
 }
 
 type Transaction struct {
 	TxID     string `json:"txid"`
 	Hash     string `json:"hash"`
-	Version  uint   `json:"version"`
-	Size     uint   `json:"size"`
-	VSize    uint   `json:"vsize"`
-	Weight   uint   `json:"weight"`
-	Locktime uint   `json:"locktime"`
+	Version  int64  `json:"version"`
+	Size     int64  `json:"size"`
+	VSize    int64  `json:"vsize"`
+	Weight   int64  `json:"weight"`
+	Locktime int64  `json:"locktime"`
 	Vin      []struct {
 		Coinbase  *string `json:"coinbase"`
 		TxID      *string `json:"txid"`
-		Vout      uint    `json:"vout"`
+		Vout      int64   `json:"vout"`
 		ScriptSig struct {
 			Asm *string `json:"asm"`
 			Hex *string `json:"hex"`
@@ -115,7 +115,7 @@ type Transaction struct {
 		TxInWitness []string `json:"txinwitness"`
 		Prevout     struct {
 			Generated    bool             `json:"generated"`
-			PrevHeight   *uint            `json:"height"`
+			PrevHeight   *int64           `json:"height"`
 			Value        *decimal.Decimal `json:"value"`
 			ScriptPubKey struct {
 				Asm     *string `json:"asm"`
@@ -125,11 +125,11 @@ type Transaction struct {
 				Type    *string `json:"type"`
 			} `json:"scriptPubKey"`
 		} `json:"prevout"`
-		Sequence uint `json:"sequence"`
+		Sequence int64 `json:"sequence"`
 	} `json:"vin"`
 	Vout []struct {
 		Value        decimal.Decimal `json:"value"`
-		N            uint            `json:"n"`
+		N            int64           `json:"n"`
 		ScriptPubKey struct {
 			Asm     string  `json:"asm"`
 			Desc    string  `json:"desc"`
@@ -245,7 +245,7 @@ func (rpcRequest *RPCRequest) GetBlockHash(config *Config, ctx *context.Context,
 	return blockhash, nil
 }
 
-func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
+func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock int64) error {
 	//********************************************************************//
 	// Start a transaction                                                //
 	//********************************************************************//
@@ -262,6 +262,10 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 	// COPY blocks                                                        //
 	//********************************************************************//
 
+	// convert timestamps to time.Time
+	blockTime := time.Unix(int64(block.Time), 0).UTC()
+	blockMedianTime := time.Unix(int64(block.MedianTime), 0).UTC()
+
 	// Generate csv
 	blocksCSV := fmt.Sprintf(
 		"%s,%d,%d,%d,%s,%s,%s,%s,%d,%s,%s,%s,%d,%s,%s,%d,%d,%d\n",
@@ -271,8 +275,8 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 		block.Version,
 		block.VersionHex,
 		block.MerkleRoot,
-		block.Time.Format("2006-01-02 15:04:05-07:00"),
-		block.MedianTime.Format("2006-01-02 15:04:05-07:00"),
+		blockTime.Format("2006-01-02 15:04:05-07:00"),
+		blockMedianTime.Format("2006-01-02 15:04:05-07:00"),
 		block.Nonce,
 		block.Bits,
 		block.Difficulty,
@@ -284,6 +288,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 		block.Size,
 		block.Weight,
 	)
+	// log.Printf("%d,%d,%d,%d,%d,%d,%d,%d\n", block.Confirmations, block.Height, block.Version, block.Nonce, block.NTX, block.StrippedSize, block.Size, block.Weight)
 	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(blocksCSV), `
 		COPY blocks (
 		blockhash, confirmations, height, version, version_hex, merkle_root, 
@@ -334,7 +339,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 			t.Hex,
 			block.BlockHash,
 			block.Height,
-			block.Time.Format("2006-01-02 15:04:05-07:00"),
+			blockTime.Format("2006-01-02 15:04:05-07:00"),
 		)
 
 		//********************************************************************//
@@ -351,7 +356,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 				NullString(v.ScriptSig.Asm),
 				NullString(v.ScriptSig.Hex),
 				witness,
-				NullUint(v.Prevout.PrevHeight),
+				NullInt64(v.Prevout.PrevHeight),
 				NullDecimal(v.Prevout.Value),
 				NullString(v.Prevout.ScriptPubKey.Asm),
 				NullString(v.Prevout.ScriptPubKey.Desc),
@@ -419,6 +424,9 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn) error {
 		return errors.New(commitError)
 	}
 
+	percentComplete := float64(block.Height) / float64(highestBlock) * 100
+	log.Printf("Block %d written to db { blocktime: %s } // { %6d / %6d } // -> %.2f%% Complete\n", block.Height, blockTime, block.Height, highestBlock, percentComplete)
+
 	return nil
 }
 
@@ -429,7 +437,7 @@ func NullString(s *string) string {
 	return *s
 }
 
-func NullUint(n *uint) string {
+func NullInt64(n *int64) string {
 	if n == nil {
 		return ""
 	}
@@ -563,7 +571,7 @@ func main() {
 			}
 
 			// Copy the whole block to the database using COPY statements
-			err = block.CopyBlock(&ctx, conn)
+			err = block.CopyBlock(&ctx, conn, currentHeight)
 			if err != nil {
 				log.Fatalf("%v", err)
 			}

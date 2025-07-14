@@ -8,7 +8,7 @@ CREATE TABLE transactions (
     size INTEGER,
     vsize INTEGER,
     weight INTEGER,
-    locktime INTEGER,
+    locktime BIGINT,
     fee DECIMAL,
     hex TEXT,
     blockhash VARCHAR(64),

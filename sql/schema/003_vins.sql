@@ -14,7 +14,7 @@ CREATE TABLE vins (
     script_pubkey_hex TEXT,
     script_pubkey_address VARCHAR(64),
     script_pubkey_type VARCHAR(64),
-    sequence INTEGER
+    sequence BIGINT
 );
 
 -- +goose Down
