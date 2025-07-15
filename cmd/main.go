@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,29 +268,39 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 	blockMedianTime := time.Unix(int64(block.MedianTime), 0).UTC()
 
 	// Generate csv
-	blocksCSV := fmt.Sprintf(
-		"%s,%d,%d,%d,%s,%s,%s,%s,%d,%s,%s,%s,%d,%s,%s,%d,%d,%d\n",
+	blocksCSV := strings.Builder{}
+	blockWriter := csv.NewWriter(&blocksCSV)
+	err = blockWriter.Write([]string{
 		block.BlockHash,
-		block.Confirmations,
-		block.Height,
-		block.Version,
+		fmt.Sprintf("%d", block.Confirmations),
+		fmt.Sprintf("%d", block.Height),
+		fmt.Sprintf("%d", block.Version),
 		block.VersionHex,
 		block.MerkleRoot,
 		blockTime.Format("2006-01-02 15:04:05-07:00"),
 		blockMedianTime.Format("2006-01-02 15:04:05-07:00"),
-		block.Nonce,
+		fmt.Sprintf("%d", block.Nonce),
 		block.Bits,
-		block.Difficulty,
+		block.Difficulty.StringFixed(8),
 		block.Chainwork,
-		block.NTX,
+		fmt.Sprintf("%d", block.NTX),
 		NullString(block.PreviousBlockHash),
 		NullString(block.NextBlockHash),
-		block.StrippedSize,
-		block.Size,
-		block.Weight,
-	)
+		fmt.Sprintf("%d", block.StrippedSize),
+		fmt.Sprintf("%d", block.Size),
+		fmt.Sprintf("%d", block.Weight),
+	})
+	if err != nil {
+		blockWriterCSVErr := fmt.Sprintf("ERROR: error with blockWriter: %d", err)
+		return errors.New(blockWriterCSVErr)
+	}
+
+	blockWriter.Flush()
+	if err := blockWriter.Error(); err != nil {
+		return fmt.Errorf("flush block CSV: %w", err)
+	}
 	// log.Printf("%d,%d,%d,%d,%d,%d,%d,%d\n", block.Confirmations, block.Height, block.Version, block.Nonce, block.NTX, block.StrippedSize, block.Size, block.Weight)
-	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(blocksCSV), `
+	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(blocksCSV.String()), `
 		COPY blocks (
 		blockhash, confirmations, height, version, version_hex, merkle_root, 
 		time, median_time, nonce, bits, difficulty, chainwork, ntx, 
@@ -297,6 +308,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 		) FROM STDIN WITH (FORMAT csv, NULL '')
 	`)
 	if err != nil {
+		fmt.Println("blocksCSV: ", blocksCSV.String())
 		copyBlocksErr := fmt.Sprintf("ERROR: error with COPY blocks: %v", err)
 		return errors.New(copyBlocksErr)
 	}
@@ -306,6 +318,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 	//********************************************************************//
 
 	transactionsCSV := strings.Builder{}
+	txWriter := csv.NewWriter(&transactionsCSV)
 	for _, t := range block.Transactions {
 		segwit := false
 
@@ -325,34 +338,39 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 				break
 			}
 		}
-		fmt.Fprintf(&transactionsCSV, "%s,%s,%t,%t,%d,%d,%d,%d,%d,%s,%s,%s,%d,%s\n",
+		err := txWriter.Write([]string{
 			t.TxID,
 			t.Hash,
-			segwit,
-			rbf,
-			t.Version,
-			t.Size,
-			t.VSize,
-			t.Weight,
-			t.Locktime,
+			fmt.Sprintf("%t", segwit),
+			fmt.Sprintf("%t", rbf),
+			fmt.Sprintf("%d", t.Version),
+			fmt.Sprintf("%d", t.Size),
+			fmt.Sprintf("%d", t.VSize),
+			fmt.Sprintf("%d", t.Weight),
+			fmt.Sprintf("%d", t.Locktime),
 			t.Fee.String(),
 			t.Hex,
 			block.BlockHash,
-			block.Height,
+			fmt.Sprintf("%d", block.Height),
 			blockTime.Format("2006-01-02 15:04:05-07:00"),
-		)
+		})
+		if err != nil {
+			txCSVWriterErr := fmt.Sprintf("ERROR: txCSVWriterErr: %d", err)
+			return errors.New(txCSVWriterErr)
+		}
 
 		//********************************************************************//
 		// COPY vins                                                          //
 		//********************************************************************//
 		vinsCSV := strings.Builder{}
+		vinsWriter := csv.NewWriter(&vinsCSV)
 		for _, v := range t.Vin {
 			witness := "{" + strings.Join(v.TxInWitness, ",") + "}"
-			fmt.Fprintf(&vinsCSV, "%s,%s,%s,%d,%s,%s,%q,%s,%s,%s,%s,%s,%s,%s,%d\n",
+			err := vinsWriter.Write([]string{
 				t.TxID,
 				NullString(v.TxID),
 				NullString(v.Coinbase),
-				v.Vout,
+				fmt.Sprintf("%d", v.Vout),
 				NullString(v.ScriptSig.Asm),
 				NullString(v.ScriptSig.Hex),
 				witness,
@@ -363,8 +381,16 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 				NullString(v.Prevout.ScriptPubKey.Hex),
 				NullString(v.Prevout.ScriptPubKey.Address),
 				NullString(v.Prevout.ScriptPubKey.Type),
-				v.Sequence,
-			)
+				fmt.Sprintf("%d", v.Sequence),
+			})
+			if err != nil {
+				vinsWriterErr := fmt.Sprintf("ERROR: vinswritererr: %v", err)
+				return errors.New(vinsWriterErr)
+			}
+		}
+		vinsWriter.Flush()
+		if err := vinsWriter.Error(); err != nil {
+			return fmt.Errorf("flush vins CSV: %w", err)
 		}
 		_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(vinsCSV.String()), `
 			COPY vins (
@@ -374,25 +400,35 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 			) FROM STDIN WITH (FORMAT csv, NULL '', QUOTE '"', ESCAPE '\')
 		`)
 		if err != nil {
+			fmt.Println("vinsCSV: ", vinsCSV.String())
 			vinsCSVError := fmt.Sprintf("ERROR: error COPY vins to db: %v", err)
 			return errors.New(vinsCSVError)
 		}
 
 		//********************************************************************//
-		// COPY vins                                                          //
+		// COPY vouts                                                         //
 		//********************************************************************//
 		voutsCSV := strings.Builder{}
+		voutsWriter := csv.NewWriter(&voutsCSV)
 		for _, v := range t.Vout {
-			fmt.Fprintf(&voutsCSV, "%s,%s,%d,%s,%s,%s,%s,%s\n",
+			err := voutsWriter.Write([]string{
 				t.TxID,
 				v.Value.String(),
-				v.N,
+				fmt.Sprintf("%d", v.N),
 				v.ScriptPubKey.Asm,
 				v.ScriptPubKey.Desc,
 				v.ScriptPubKey.Hex,
 				NullString(v.ScriptPubKey.Address),
 				v.ScriptPubKey.Type,
-			)
+			})
+			if err != nil {
+				voutsWriterErr := fmt.Sprintf("ERROR: error with voutsWriter: %v", err)
+				return errors.New(voutsWriterErr)
+			}
+		}
+		voutsWriter.Flush()
+		if err := voutsWriter.Error(); err != nil {
+			return fmt.Errorf("flush vout CSV: %w", err)
 		}
 		_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(voutsCSV.String()), `
 			COPY vouts (
@@ -401,9 +437,14 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 			) FROM STDIN WITH (FORMAT csv, NULL '', QUOTE '"', ESCAPE '\')
 		`)
 		if err != nil {
+			log.Println("voutCSV:", voutsCSV.String())
 			voutsCSVError := fmt.Sprintf("ERROR: error COPY vouts to db: %v", err)
 			return errors.New(voutsCSVError)
 		}
+	}
+	txWriter.Flush()
+	if err := txWriter.Error(); err != nil {
+		return fmt.Errorf("flush transaction CSV: %w", err)
 	}
 	_, err = dbtx.Conn().PgConn().CopyFrom(*ctx, strings.NewReader(transactionsCSV.String()), `
 	COPY transactions (
@@ -412,6 +453,7 @@ func (block *Block) CopyBlock(ctx *context.Context, conn *pgx.Conn, highestBlock
 		) FROM STDIN WITH (FORMAT csv, NULL '')
 	`)
 	if err != nil {
+		fmt.Println("txCSV: ", transactionsCSV.String())
 		transactionCSVError := fmt.Sprintf("ERROR: error copying transactions: %v", err)
 		return errors.New(transactionCSVError)
 	}

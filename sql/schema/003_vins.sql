@@ -7,7 +7,7 @@ CREATE TABLE vins (
     scriptsig_asm TEXT,
     scriptsig_hex TEXT,
     txinwitness TEXT[],
-    prev_blockheight INTEGER,
+    prev_blockheight BIGINT,
     value DECIMAL(16,8),
     script_pubkey_asm TEXT,
     script_pubkey_desc TEXT,

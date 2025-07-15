@@ -5,14 +5,14 @@ CREATE TABLE transactions (
     segwit BOOLEAN,
     replace_by_fee BOOLEAN,
     version INTEGER,
-    size INTEGER,
-    vsize INTEGER,
-    weight INTEGER,
+    size BIGINT,
+    vsize BIGINT,
+    weight BIGINT,
     locktime BIGINT,
     fee DECIMAL,
     hex TEXT,
     blockhash VARCHAR(64),
-    blockheight INTEGER,
+    blockheight BIGINT,
     time TIMESTAMPTZ
 );
 
